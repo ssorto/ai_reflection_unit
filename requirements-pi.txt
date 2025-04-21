@@ -1,0 +1,5 @@
+paho-mqtt
+opencv-python
+numpy
+rpi_ws281x
+adafruit-circuitpython-neopixel
