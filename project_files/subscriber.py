@@ -4,106 +4,106 @@ import json
 import paho.mqtt.client as mqtt
 import time
 from utils import color_to_emotion
+from picamera2 import Picamera2
 
-# Load HSV thresholds
-with open("project_files/hsv_ranges.json", "r") as f:
-    hsv_ranges = json.load(f)
-
-# ------------------ CONFIG ------------------
-from utils import color_to_emotion  # maps 'red' → 'Frustrated'
-
+# ------------------ MQTT CONFIG ------------------
 BROKER = "test.mosquitto.org"
 CARD_INPUT_TOPIC = "survey/card_input"
 PROMPT_TOPIC = "survey/ai_prompt"
 USER_INPUT_TOPIC = "survey/user_input"
 SESSION_END_TOPIC = "survey/session_end"
 
-# Load HSV ranges from JSON file
+# ------------------ LOAD HSV RANGES ------------------
 with open("project_files/hsv_ranges.json", "r") as f:
     hsv_ranges = json.load(f)
 
+# ------------------ STATE ------------------
 session_stage = "T1"
 selected_emotions = []
 
-# ------------------ FUNCTIONS ------------------
+# ------------------ CAMERA INIT ------------------
+picam2 = Picamera2()
+picam2.preview_configuration.main.size = (1240, 1280)
+picam2.preview_configuration.main.format = "RGB888"
+picam2.configure("preview")
+picam2.start()
+time.sleep(2)
 
-def detect_cards_from_frame(frame):
+# ------------------ FUNCTION ------------------
+def detect_cards_from_frame():
+    frame = picam2.capture_array()
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     detected = []
+
     for color_name, bounds in hsv_ranges.items():
         lower = np.array(bounds["lower"])
         upper = np.array(bounds["upper"])
         mask = cv2.inRange(hsv, lower, upper)
-        if cv2.countNonZero(mask) > 5000:
-            emotion = color_to_emotion.get(color_name)
-            if emotion and emotion not in detected:
-                detected.append(emotion)
-    return detected[:3]  # limit to 3 emotions
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 2000:
+                x, y, w, h = cv2.boundingRect(cnt)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, color_name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, (0, 255, 0), 2)
+                emotion = color_to_emotion.get(color_name)
+                if emotion and emotion not in detected:
+                    detected.append(emotion)
 
-def wait_for_user_input():
-    return input("Type your reflection: ")
+    cv2.imshow("PiCam View", frame)
+    return detected[:3]
 
-
-def display_prompt(prompt):
-    print("\nAI: ", prompt)
-
-
-def handle_ai_prompt(client, userdata, msg):
+# ------------------ MQTT CALLBACKS ------------------
+def on_message(client, userdata, msg):
     global session_stage
-    prompt = json.loads(msg.payload.decode())["prompt"]
-    display_prompt(prompt)
+    if msg.topic == PROMPT_TOPIC:
+        payload = json.loads(msg.payload.decode())
+        prompt = payload.get("prompt", "")
+        print(f"\n? AI Prompt: {prompt}")
 
-    if session_stage == "T2":
-        reflection = wait_for_user_input()
-        client.publish(USER_INPUT_TOPIC, json.dumps({"text": reflection}))
-        session_stage = "T3"
+        if session_stage == "T2":
+            response = input("?? Your response: ")
+            client.publish(USER_INPUT_TOPIC, json.dumps({"text": response}))
+            session_stage = "T3"
 
-    elif session_stage == "T3":
-        reflection = wait_for_user_input()
-        client.publish(USER_INPUT_TOPIC, json.dumps({"text": reflection}))
-        # Now wait for session_end
+        elif session_stage == "T3":
+            response = input("?? Final reflection: ")
+            client.publish(USER_INPUT_TOPIC, json.dumps({"text": response}))
+            session_stage = "DONE"
 
+    elif msg.topic == SESSION_END_TOPIC:
+        print("\n? Session complete!")
 
-def handle_session_end(client, userdata, msg):
-    print("\nSession complete. Thank you for reflecting!")
-    exit()
-
-# ------------------ MQTT SETUP ------------------
-
+# ------------------ MAIN ------------------
 client = mqtt.Client()
 client.connect(BROKER, 1883, 60)
 client.loop_start()
-
 client.subscribe(PROMPT_TOPIC)
 client.subscribe(SESSION_END_TOPIC)
-client.message_callback_add(PROMPT_TOPIC, handle_ai_prompt)
-client.message_callback_add(SESSION_END_TOPIC, handle_session_end)
+client.on_message = on_message
 
-# ------------------ MAIN ------------------
+print("System Ready. Press 'q' in the camera window to stop.")
 
-print("System Ready. Please place emotion cards in view...")
+try:
+    while True:
+        emotions = detect_cards_from_frame()
+        if session_stage == "T1" and emotions:
+            print(f"? Detected emotions: {emotions}")
+            client.publish(CARD_INPUT_TOPIC, json.dumps({"cards": emotions}))
+            session_stage = "T2"
 
-cap = cv2.VideoCapture(0)
+        # Keep imshow responsive
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-while session_stage == "T1":
-    ret, frame = cap.read()
-    if not ret:
-        print("Failed to read from camera.")
-        break
+        time.sleep(0.1)
 
-    emotions = detect_cards_from_frame(frame)
-    if emotions:
-        print("Detected emotions:", emotions)
-        selected_emotions = emotions
-        client.publish(CARD_INPUT_TOPIC, json.dumps({"cards": emotions}))
-        session_stage = "T2"
-        print("Waiting for AI to generate Prompt 1...")
-    
-    time.sleep(1)
+except KeyboardInterrupt:
+    print("\nExiting...")
 
-cap.release()
-cv2.destroyAllWindows()
-
-while True:
-    time.sleep(1)  # Keep script running for MQTT listener
+finally:
+    client.loop_stop()
+    picam2.close()
+    cv2.destroyAllWindows()
