@@ -10,7 +10,7 @@ color_to_emotion = {
     "green": "Confident",
     "blue": "Relieved",
     "yellow": "Overwhelmed",
-    "gray": "Skeptical",
+    "orange": "Skeptical",
     "purple": "Satisfied"
 }
 
@@ -34,8 +34,8 @@ try:
         full_frame = picam2.capture_array()
 
         # Tray mask region
-        y1, y2 = 270, 950
-        x1, x2 = 60, 1240
+        y1, y2 = 150, 800
+        x1, x2 = 100,1140
         tray_roi = full_frame[y1:y2, x1:x2]
 
         # Build tray mask
