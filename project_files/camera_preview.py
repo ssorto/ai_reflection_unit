@@ -49,10 +49,20 @@ try:
         detected = []
 
         for color_name, bounds in hsv_ranges.items():
-            lower = np.array(bounds["lower"])
-            upper = np.array(bounds["upper"])
-            mask = cv2.inRange(masked_hsv, lower, upper)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Handle red separately since it has two ranges
+            if color_name == "red":
+                lower1 = np.array(bounds["lower1"])
+                upper1 = np.array(bounds["upper1"])
+                lower2 = np.array(bounds["lower2"])
+                upper2 = np.array(bounds["upper2"])
+                mask1 = cv2.inRange(masked_hsv, lower1, upper1)
+                mask2 = cv2.inRange(masked_hsv, lower2, upper2)
+                mask = cv2.bitwise_or(mask1, mask2)
+            else:
+                lower = np.array(bounds["lower"])
+                upper = np.array(bounds["upper"])
+                mask = cv2.inRange(masked_hsv, lower, upper)
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             for cnt in contours:
                 area = cv2.contourArea(cnt)
