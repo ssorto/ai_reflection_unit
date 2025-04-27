@@ -22,14 +22,23 @@ session_state = {
 
 # ------------------ HELPER ------------------
 
-def generate_prompt(stage, emotions=None, reflection=None):
+def generate_prompt(stage, emotions=None, reflections=None):
     if stage == "T1":
         joined = " and ".join(emotions)
-        return f"What made you feel {joined} during your experience?"
-    elif stage == "T2":
-        return f"Thanks for sharing. How did that shape your overall impression?"
+        return (f"Thinking about your car shopping experience today, "
+                f"what specific moments made you feel {joined} — "
+                f"was it during browsing, financing, or delivery?")
+    
+    elif stage == "T2" and reflections:
+        return (f"The user reflected: \"{reflections[0]}\" "
+                f"Based on this, generate a thoughtful follow-up question to explore how this emotional journey influenced their trust or loyalty.")
+    
+    elif stage == "T3" and reflections:
+        return (f"The user reflected: {reflections} "
+                f"Based on these reflections, generate a final open-ended question to encourage the user to summarize their overall experience as if telling a friend.")
+    
     else:
-        return "What would you want a friend to know about your experience?"
+        return "Thank you for reflecting!"
 
 # ------------------ CALLBACKS ------------------
 
@@ -46,14 +55,26 @@ def handle_user_input(client, userdata, msg):
     session_state["reflections"].append(user_text)
 
     if session_state["stage"] == "T2":
-        prompt2 = generate_prompt("T2", reflection=user_text)
-        client.publish(PROMPT_TOPIC, json.dumps({"prompt": prompt2}))
+        prompt2 = generate_prompt("T2", reflections=session_state["reflections"])
+        ai_response = call_gemini(prompt2)  # <<<<< NEW: Ask Gemini
+        client.publish(PROMPT_TOPIC, json.dumps({"prompt": ai_response}))
+
+        # Adding this fallback check here
+        if not ai_response:
+            ai_response = "Thanks for sharing! Could you tell me a bit more about that experience?"
+
         session_state["stage"] = "T3"
-        print("Sent Prompt 2:", prompt2)
+        print("Sent Prompt 2:", ai_response)
 
     elif session_state["stage"] == "T3":
-        closing = generate_prompt("T3")
-        client.publish(PROMPT_TOPIC, json.dumps({"prompt": closing}))
+        closing = generate_prompt("T3", reflections=session_state["reflections"])
+        ai_response = call_gemini(closing)  # <<<<< NEW: Ask Gemini
+        client.publish(PROMPT_TOPIC, json.dumps({"prompt": ai_response}))
+
+        # Adding fallback check here too
+        if not ai_response:
+            ai_response = "Thank you for reflecting with us! Is there anything else you’d like to share?"
+
         client.publish(SESSION_END_TOPIC, json.dumps({"status": "done"}))
         session_state["stage"] = "DONE"
         print("Session complete. Sent wrap-up message.")
