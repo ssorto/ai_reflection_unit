@@ -30,29 +30,63 @@ picam2.start()
 time.sleep(2)
 
 # ------------------ FUNCTION ------------------
+detection_counter = {}
+
 def detect_cards_from_frame():
+    global detection_counter
     frame = picam2.capture_array()
+
+    # Define tray mask region (final fine-tuned numbers)
+    y1, y2 = 150, 800
+    x1, x2 = 100, 1140
+    tray_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    tray_mask[y1:y2, x1:x2] = 255
+
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    masked_hsv = cv2.bitwise_and(hsv, hsv, mask=tray_mask)
+
     detected = []
 
     for color_name, bounds in hsv_ranges.items():
-        lower = np.array(bounds["lower"])
-        upper = np.array(bounds["upper"])
-        mask = cv2.inRange(hsv, lower, upper)
-        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if color_name == "red":
+            lower1 = np.array(bounds["lower1"])
+            upper1 = np.array(bounds["upper1"])
+            lower2 = np.array(bounds["lower2"])
+            upper2 = np.array(bounds["upper2"])
+            mask1 = cv2.inRange(masked_hsv, lower1, upper1)
+            mask2 = cv2.inRange(masked_hsv, lower2, upper2)
+            mask = cv2.bitwise_or(mask1, mask2)
+        else:
+            lower = np.array(bounds["lower"])
+            upper = np.array(bounds["upper"])
+            mask = cv2.inRange(masked_hsv, lower, upper)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area > 2000:
+            if area > 2500:
                 x, y, w, h = cv2.boundingRect(cnt)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(frame, color_name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6, (0, 255, 0), 2)
-                emotion = color_to_emotion.get(color_name)
-                if emotion and emotion not in detected:
-                    detected.append(emotion)
 
-    cv2.imshow("PiCam View", frame)
+                emotion = color_to_emotion.get(color_name)
+                detection_counter[color_name] = detection_counter.get(color_name, 0) + 1
+
+                if detection_counter[color_name] >= 4:
+                    if emotion and emotion not in detected:
+                        detected.append(emotion)
+                        # Draw green detection box and label
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        cv2.putText(frame, color_name, (x, y - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    break  # Only one match per color per frame
+
+    # Draw tray region in red for reference
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+    # Show live camera feed
+    cv2.imshow("Tray View", frame)
+    cv2.waitKey(1)
+
     return detected[:3]
 
 # ------------------ MQTT CALLBACKS ------------------
@@ -61,7 +95,12 @@ def on_message(client, userdata, msg):
     if msg.topic == PROMPT_TOPIC:
         payload = json.loads(msg.payload.decode())
         prompt = payload.get("prompt", "")
-        print(f"\n? AI Prompt: {prompt}")
+
+        # Cleaner printed output
+        print("\n" + "-"*50)
+        print(f"AI Prompt: {prompt}")
+        print("-"*50 + "\n")
+
 
         if session_stage == "T2":
             response = input("?? Your response: ")
@@ -83,6 +122,14 @@ client.loop_start()
 client.subscribe(PROMPT_TOPIC)
 client.subscribe(SESSION_END_TOPIC)
 client.on_message = on_message
+
+# Inserting greeting block:
+print("\n" + "="*60)
+print("Welcome! We'd love to hear about your car shopping experience.")
+print("Please select 1-3 cards that capture how you felt during your visit.")
+print("Place your selected cards onto the tray to begin.")
+print("Press 'q' at any time to exit.\n")
+print("="*60)
 
 print("System Ready. Press 'q' in the camera window to stop.")
 
