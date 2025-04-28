@@ -20,6 +20,7 @@ with open("project_files/hsv_ranges.json", "r") as f:
 # ------------------ STATE ------------------
 session_stage = "T1"
 selected_emotions = []
+awaiting_user_input = False
 
 # ------------------ CAMERA INIT ------------------
 picam2 = Picamera2()
@@ -36,7 +37,7 @@ def detect_cards_from_frame():
     global detection_counter
     frame = picam2.capture_array()
 
-    # Define tray mask region (final fine-tuned numbers)
+    # Define tray mask region
     y1, y2 = 150, 800
     x1, x2 = 100, 1140
     tray_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
@@ -67,63 +68,62 @@ def detect_cards_from_frame():
             area = cv2.contourArea(cnt)
             if area > 2500:
                 x, y, w, h = cv2.boundingRect(cnt)
-
                 emotion = color_to_emotion.get(color_name)
                 detection_counter[color_name] = detection_counter.get(color_name, 0) + 1
 
                 if detection_counter[color_name] >= 4:
                     if emotion and emotion not in detected:
                         detected.append(emotion)
-                        # Draw green detection box and label
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         cv2.putText(frame, color_name, (x, y - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    break  # Only one match per color per frame
+                    break
 
-    # Draw tray region in red for reference
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-    # Show live camera feed
     cv2.imshow("Tray View", frame)
     cv2.waitKey(1)
 
     return detected[:3]
 
 # ------------------ MQTT CALLBACKS ------------------
+
+awaiting_user_input = False
+
 def on_message(client, userdata, msg):
-    global session_stage
+    global awaiting_user_input
+    payload = json.loads(msg.payload.decode())
+
     if msg.topic == PROMPT_TOPIC:
-        payload = json.loads(msg.payload.decode())
         prompt = payload.get("prompt", "")
-
-        # Cleaner printed output
-        print("\n" + "-"*50)
+        print("\n-----------------------------------------------")
         print(f"AI Prompt: {prompt}")
-        print("-"*50 + "\n")
+        print("-----------------------------------------------")
 
-
-        if session_stage == "T2":
-            response = input("?? Your response: ")
-            client.publish(USER_INPUT_TOPIC, json.dumps({"text": response}))
-            session_stage = "T3"
-
-        elif session_stage == "T3":
-            response = input("?? Final reflection: ")
-            client.publish(USER_INPUT_TOPIC, json.dumps({"text": response}))
-            session_stage = "DONE"
+        if prompt.lower().startswith("thank you"):
+            # Final closing message ? no input expected
+            awaiting_user_input = False
+        else:
+            awaiting_user_input = True
+            while True:
+                user_response = input("?? Your response: ").strip()
+                if user_response:
+                    client.publish(USER_INPUT_TOPIC, json.dumps({"text": user_response}))
+                    break
 
     elif msg.topic == SESSION_END_TOPIC:
-        print("\n? Session complete!")
+        print("\n==============================================")
+        print("Session complete!")
+        print("==============================================")
 
 # ------------------ MAIN ------------------
 client = mqtt.Client()
 client.connect(BROKER, 1883, 60)
 client.loop_start()
+
 client.subscribe(PROMPT_TOPIC)
 client.subscribe(SESSION_END_TOPIC)
 client.on_message = on_message
 
-# Inserting greeting block:
 print("\n" + "="*60)
 print("Welcome! We'd love to hear about your car shopping experience.")
 print("Please select 1-3 cards that capture how you felt during your visit.")
@@ -132,16 +132,19 @@ print("Press 'q' at any time to exit.\n")
 print("="*60)
 
 print("System Ready. Press 'q' in the camera window to stop.")
+print("\nTake a moment to place your cards. Detection will start in 10 seconds...")
+time.sleep(10)
+detection_counter.clear()
+print("Starting detection now!")
 
 try:
     while True:
         emotions = detect_cards_from_frame()
         if session_stage == "T1" and emotions:
-            print(f"? Detected emotions: {emotions}")
+            print(f"? Final detected emotions: {emotions}")
             client.publish(CARD_INPUT_TOPIC, json.dumps({"cards": emotions}))
             session_stage = "T2"
 
-        # Keep imshow responsive
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
